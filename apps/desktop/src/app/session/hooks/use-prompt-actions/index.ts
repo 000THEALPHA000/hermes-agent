@@ -65,6 +65,7 @@ import {
   durableRowIdsForRebind,
   type EditPlan,
   finalizeStoppedMessages,
+  laterVisibleUserTurns,
   planConfirmedReload,
   planEdit,
   planEditAfterConfirm,
@@ -1035,7 +1036,7 @@ export function usePromptActions({
 
       // The confirm is a wait of user length: a turn that started or output that landed meanwhile
       // makes the plan (and the rollback snapshot) stale, so drop it rather than cut a live turn.
-      if (!plan || isStaleAfterConfirm(sessionId, messages)) {
+      if (!plan || activeSessionIdRef.current !== sessionId || isStaleAfterConfirm(sessionId, messages)) {
         return
       }
 
@@ -1228,7 +1229,7 @@ export function usePromptActions({
       edited: AppendMessage,
       plan: EditPlan & { confirmDeepTruncate: boolean },
       messages: ChatMessage[]
-    ): Promise<'sent' | { surfaced?: unknown; surfacedConfirmed?: boolean; unavailable: boolean }> => {
+    ): Promise<'cancelled' | 'sent' | { surfaced?: unknown; surfacedConfirmed?: boolean; unavailable: boolean }> => {
       let surfacedConfirmed: boolean | undefined
 
       try {
@@ -1246,6 +1247,23 @@ export function usePromptActions({
         }
 
         surfacedConfirmed = retryKeepsDeepConfirm(plan, messages, retryPlan, refreshed)
+
+        // A refreshed 4018 retry can reveal later user turns the first plan did
+        // not cover. During the warn-only rollout the backend still allows an
+        // unconfirmed deep cut, so the client must ask again before sending it.
+        if (laterVisibleUserTurns(refreshed, retryPlan.sourceIndex) > 0 && !surfacedConfirmed) {
+          const accepted = await confirm(deepCutConfirmRequest(t.assistant.thread))
+
+          if (
+            !accepted ||
+            activeSessionIdRef.current !== sessionId ||
+            currentMessages(sessionId) !== refreshed
+          ) {
+            return 'cancelled'
+          }
+
+          surfacedConfirmed = true
+        }
 
         const survivorRowIds = await submitRewindPrompt(
           sessionId,
@@ -1270,7 +1288,7 @@ export function usePromptActions({
         }
       }
     },
-    [applySurvivorRowIds, resumeStoredSession, selectedStoredSessionIdRef, submitRewindPrompt]
+    [activeSessionIdRef, applySurvivorRowIds, resumeStoredSession, selectedStoredSessionIdRef, submitRewindPrompt, t]
   )
 
   // Roll an optimistic edit/truncation back to the original history so the UI stays in sync with
@@ -1372,6 +1390,12 @@ export function usePromptActions({
           const retried = await retryStaleEdit(sessionId, edited, plan, messages)
 
           if (retried === 'sent') {
+            return
+          }
+
+          if (retried === 'cancelled') {
+            rollBackEdit(sessionId, messages)
+
             return
           }
 
