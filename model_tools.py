@@ -21,7 +21,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover_builtin_tools, registry, tool_error
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
-from tools.arg_coercion import coerce_tool_args
+from tools.arg_coercion import coerce_tool_args, missing_required_args_error
 from tools.todo_tool import TODO_LEGACY_ALIASES, TODO_SCHEMA
 from utils import file_signature
 
@@ -655,35 +655,6 @@ class _CallIds:
         return {k: v or "" for k, v in asdict(self).items()}
 
 
-def validate_required_params(
-    tool_name: str, args: Dict[str, Any]
-) -> list[str]:
-    """Return a list of missing required parameter names.
-
-    Checks the tool's JSON Schema ``required`` array against the keys present
-    in *args*.  Returns an empty list when all required params are present
-    (or when no schema / no required array exists for the tool).
-
-    This runs after ``coerce_tool_args`` so type-mismatched values have already
-    been normalized — it only catches genuinely *missing* params that the model
-    omitted from its tool call, which currently surfaces as a confusing
-    ``KeyError`` or default-value-when-none-existed deep inside the tool
-    handler.
-    """
-    if not isinstance(args, dict) or not args and args != {}:
-        # args could be {} (valid: no required params or all optional).
-        # Only skip on non-dict.
-        if not isinstance(args, dict):
-            return []
-    schema = registry.get_schema(tool_name)
-    if not schema:
-        return []
-    required = (schema.get("parameters") or {}).get("required")
-    if not required or not isinstance(required, list):
-        return []
-    return [r for r in required if r not in args]
-
-
 def _tool_result_observer_fields(tool_name: str, result: Any) -> tuple[str, Optional[str], Optional[str]]:
     """Derive (status, error_type, error_message) from a tool result for observer hooks."""
     try:
@@ -864,6 +835,10 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
         from tools.connectors import dispatch_connector_call, is_connector_name
         if is_connector_name(function_name):
             return dispatch_connector_call(function_name, next_args, ids.tool_call_id)
+        # Checked on the FINAL args: request middleware and pre_tool_call may supply a required field.
+        missing_error = missing_required_args_error(function_name, next_args)
+        if missing_error is not None:
+            return missing_error
         return registry.dispatch(function_name, next_args, **dispatch_kwargs)
 
     with _approval_observability(ids):
@@ -917,22 +892,6 @@ def handle_function_call(
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
-    # Validate required parameters are present before dispatching.
-    # coerce_tool_args handles *type* mismatches; this catches genuinely
-    # *missing* required params that would otherwise surface as confusing
-    # KeyError or None-default behaviour deep inside the tool handler.
-    _missing = validate_required_params(function_name, function_args)
-    if _missing:
-        _hint = (
-            f"Missing required parameter(s): {', '.join(_missing)}. "
-            f"Please retry with all required parameters."
-        )
-        logger.info(
-            "validate_required_params: %s missing %s",
-            function_name, _missing,
-        )
-        return json.dumps({"error": _hint}, ensure_ascii=False)
-
     trace = list(tool_request_middleware_trace or [])
     function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
     ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id)
