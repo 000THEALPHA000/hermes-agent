@@ -803,15 +803,14 @@ def _bare_collection_enabled() -> Optional[bool]:
     enabled = _collection_enabled_now()
     if enabled is not None:
         return enabled
+    # stdlib-only, so safe in a bare interpreter; never fetches (a remote layer always "exists").
+    from hermes_cli.config_backend import config_exists
     from hermes_constants import get_hermes_home
 
     try:
-        (get_hermes_home() / "config.yaml").stat()
-    except FileNotFoundError:
-        return False
+        return None if config_exists(get_hermes_home() / "config.yaml") else False
     except OSError:
         return None
-    return None
 
 
 def _park_metric_receipt(data: dict[str, Any], enabled: Optional[bool]) -> None:
