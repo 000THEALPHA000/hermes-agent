@@ -824,8 +824,7 @@ export async function planEditAfterConfirm(opts: {
 
 /**
  * A stale-target retry re-addresses the same turn after a history refresh. The user's deep-cut
- * answer covers the later turns they saw; if the refresh shows more, the retry goes unconfirmed and
- * the server gate decides.
+ * answer covers the later turns they saw; if the refresh shows more, the retry asks again.
  */
 export function retryKeepsDeepConfirm(
   plan: EditPlan & { confirmDeepTruncate: boolean },
