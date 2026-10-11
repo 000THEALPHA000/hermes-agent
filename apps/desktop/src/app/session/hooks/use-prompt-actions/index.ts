@@ -1218,18 +1218,38 @@ export function usePromptActions({
     ]
   )
 
+  // Roll an optimistic edit/truncation back to the original history so the UI stays in sync with
+  // what's persisted instead of stranding a partial timeline.
+  const rollBackEdit = useCallback(
+    (sessionId: string, messages: ChatMessage[]) => {
+      setMutableRef(busyRef, false)
+      setBusy(false)
+      setAwaitingResponse(false)
+      updateSessionState(sessionId, state => ({
+        ...state,
+        busy: false,
+        awaitingResponse: false,
+        turnLive: false,
+        turnStartedAt: null,
+        messages
+      }))
+    },
+    [busyRef, updateSessionState]
+  )
+
   // Stale target after compression/resume drift (the cached rowId and ordinal address the
   // pre-compression segment): reload server history, recompute the full edit plan against the
   // refreshed transcript, and retry the real edit once. Do NOT plain-resubmit without a truncation
   // address — that drops rewind semantics and silently appends the edit as a new turn (#82462).
-  // Returns 'sent', or the error to surface and whether that submit carried the deep confirm.
+  // Returns 'done' once the retry was sent, or declined and rolled back; otherwise the error to
+  // surface and whether that submit carried the deep confirm.
   const retryStaleEdit = useCallback(
     async (
       sessionId: string,
       edited: AppendMessage,
       plan: EditPlan & { confirmDeepTruncate: boolean },
       messages: ChatMessage[]
-    ): Promise<'cancelled' | 'sent' | { surfaced?: unknown; surfacedConfirmed?: boolean; unavailable: boolean }> => {
+    ): Promise<'done' | { surfaced?: unknown; surfacedConfirmed?: boolean; unavailable: boolean }> => {
       let surfacedConfirmed: boolean | undefined
 
       try {
@@ -1254,12 +1274,10 @@ export function usePromptActions({
         if (laterVisibleUserTurns(refreshed, retryPlan.sourceIndex) > 0 && !surfacedConfirmed) {
           const accepted = await confirm(deepCutConfirmRequest(t.assistant.thread))
 
-          if (
-            !accepted ||
-            activeSessionIdRef.current !== sessionId ||
-            currentMessages(sessionId) !== refreshed
-          ) {
-            return 'cancelled'
+          if (!accepted || activeSessionIdRef.current !== sessionId || currentMessages(sessionId) !== refreshed) {
+            rollBackEdit(sessionId, messages)
+
+            return 'done'
           }
 
           surfacedConfirmed = true
@@ -1279,7 +1297,7 @@ export function usePromptActions({
 
         applySurvivorRowIds(sessionId, survivorRowIds)
 
-        return 'sent'
+        return 'done'
       } catch (retryErr) {
         return {
           surfaced: retryErr,
@@ -1288,26 +1306,15 @@ export function usePromptActions({
         }
       }
     },
-    [activeSessionIdRef, applySurvivorRowIds, resumeStoredSession, selectedStoredSessionIdRef, submitRewindPrompt, t]
-  )
-
-  // Roll an optimistic edit/truncation back to the original history so the UI stays in sync with
-  // what's persisted instead of stranding a partial timeline.
-  const rollBackEdit = useCallback(
-    (sessionId: string, messages: ChatMessage[]) => {
-      setMutableRef(busyRef, false)
-      setBusy(false)
-      setAwaitingResponse(false)
-      updateSessionState(sessionId, state => ({
-        ...state,
-        busy: false,
-        awaitingResponse: false,
-        turnLive: false,
-        turnStartedAt: null,
-        messages
-      }))
-    },
-    [busyRef, updateSessionState]
+    [
+      activeSessionIdRef,
+      applySurvivorRowIds,
+      resumeStoredSession,
+      rollBackEdit,
+      selectedStoredSessionIdRef,
+      submitRewindPrompt,
+      t
+    ]
   )
 
   const runEdit = useCallback(
@@ -1389,13 +1396,7 @@ export function usePromptActions({
         if (!plan.isFailedTurn && !unavailable && isStaleTargetError(err)) {
           const retried = await retryStaleEdit(sessionId, edited, plan, messages)
 
-          if (retried === 'sent') {
-            return
-          }
-
-          if (retried === 'cancelled') {
-            rollBackEdit(sessionId, messages)
-
+          if (retried === 'done') {
             return
           }
 

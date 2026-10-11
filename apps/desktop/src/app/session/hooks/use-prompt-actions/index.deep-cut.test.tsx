@@ -8,7 +8,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import { clearNotifications } from '@/store/notifications'
 import { $busy, setMessages } from '@/store/session'
-import { dropSessionState, publishSessionState } from '@/store/session-states'
+import { $sessionStates, dropSessionState, publishSessionState } from '@/store/session-states'
 
 import { actRender, Harness, type HarnessHandle, RUNTIME_SESSION_ID } from './prompt-actions-harness'
 
@@ -317,6 +317,72 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
     expect(confirms).toBe(2)
     expect(submits).toHaveLength(2)
     expect(submits[1]).toMatchObject({ confirm_deep_truncate: true, truncate_before_row_id: 21 })
+  })
+
+  it('declining the second deep confirm on a stale-target retry sends nothing and rolls the edit back', async () => {
+    const seed = [
+      { id: 'u1', parts: [textPart('first')], role: 'user', rowId: 11, timestamp: 0 },
+      { id: 'a1', parts: [textPart('reply')], role: 'assistant', timestamp: 1 },
+      { id: 'u2', parts: [textPart('second')], role: 'user', rowId: 13, timestamp: 2 }
+    ]
+
+    const fresh = [
+      { ...seed[0], rowId: 21 },
+      seed[1],
+      { ...seed[2], rowId: 23 },
+      { id: 'u3', parts: [textPart('arrived after consent')], role: 'user', rowId: 25, timestamp: 3 }
+    ]
+
+    publishSessionState(RUNTIME_SESSION_ID, createClientSessionState('stored', seed as never))
+    setMessages(seed as never)
+    const submits: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submits.push(params ?? {})
+        throw new JsonRpcGatewayError('target user message is no longer in session history', { code: 4018 })
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | undefined
+
+    await actRender(
+      <Harness
+        onReady={h => {
+          handle = h
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        resumeStoredSession={async () => {
+          setMessages(fresh as never)
+        }}
+        seedMessages={seed}
+        storedSessionId="stored"
+      />
+    )
+
+    let confirms = 0
+    const stopConfirming = $confirmRequest.listen(request => {
+      if (request) {
+        confirms += 1
+        settleConfirm(confirms === 1)
+      }
+    })
+
+    await handle!.editMessage({
+      content: [{ text: 'edited first', type: 'text' }],
+      parentId: null,
+      role: 'user',
+      sourceId: 'u1'
+    } as never)
+    stopConfirming()
+
+    expect(confirms).toBe(2)
+    expect(submits).toHaveLength(1)
+    expect($busy.get()).toBe(false)
+    expect($sessionStates.get()[RUNTIME_SESSION_ID]).toMatchObject({ busy: false, messages: seed })
   })
 
   it('a deep-edit confirm answered after a session switch sends nothing and leaves the new session idle', async () => {
