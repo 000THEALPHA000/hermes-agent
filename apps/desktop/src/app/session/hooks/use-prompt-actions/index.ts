@@ -1218,23 +1218,28 @@ export function usePromptActions({
     ]
   )
 
-  // Roll an optimistic edit/truncation back to the original history so the UI stays in sync with
-  // what's persisted instead of stranding a partial timeline.
+  // Roll an optimistic edit/truncation back to *messages* (the original history) so the UI stays in
+  // sync with what's persisted instead of stranding a partial timeline; without *messages* only the
+  // busy state is cleared.
   const rollBackEdit = useCallback(
-    (sessionId: string, messages: ChatMessage[]) => {
-      setMutableRef(busyRef, false)
-      setBusy(false)
-      setAwaitingResponse(false)
+    (sessionId: string, messages?: ChatMessage[]) => {
+      // The foreground flags belong to whichever session is on screen now.
+      if (activeSessionIdRef.current === sessionId) {
+        setMutableRef(busyRef, false)
+        setBusy(false)
+        setAwaitingResponse(false)
+      }
+
       updateSessionState(sessionId, state => ({
         ...state,
         busy: false,
         awaitingResponse: false,
         turnLive: false,
         turnStartedAt: null,
-        messages
+        ...(messages ? { messages } : {})
       }))
     },
-    [busyRef, updateSessionState]
+    [activeSessionIdRef, busyRef, updateSessionState]
   )
 
   // Stale target after compression/resume drift (the cached rowId and ordinal address the
@@ -1272,10 +1277,15 @@ export function usePromptActions({
         // not cover. During the warn-only rollout the backend still allows an
         // unconfirmed deep cut, so the client must ask again before sending it.
         if (laterVisibleUserTurns(refreshed, retryPlan.sourceIndex) > 0 && !surfacedConfirmed) {
+          // Compare like with like: the session slice before and after the dialog ($messages is a
+          // separate mirror array, so comparing it with the slice is never equal).
+          const shown = currentMessages(sessionId)
           const accepted = await confirm(deepCutConfirmRequest(t.assistant.thread))
 
-          if (!accepted || activeSessionIdRef.current !== sessionId || currentMessages(sessionId) !== refreshed) {
-            rollBackEdit(sessionId, messages)
+          if (!accepted || activeSessionIdRef.current !== sessionId || currentMessages(sessionId) !== shown) {
+            // Nothing was cut and the refresh already replaced the optimistic edit: keep whatever
+            // history the session holds now and only drop the busy arm.
+            rollBackEdit(sessionId)
 
             return 'done'
           }
