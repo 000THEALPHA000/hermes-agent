@@ -20,7 +20,7 @@ def test_plane_bearer_is_not_forwarded_across_a_redirect(monkeypatch):
     seen = {}
 
     class Other(BaseHTTPRequestHandler):
-        def log_message(self, format, *args):  # noqa: A002 — base signature
+        def log_message(self, format, *args):
             pass
 
         def do_GET(self):
@@ -32,7 +32,7 @@ def test_plane_bearer_is_not_forwarded_across_a_redirect(monkeypatch):
     other = _serve(Other)
 
     class Plane(BaseHTTPRequestHandler):
-        def log_message(self, format, *args):  # noqa: A002 — base signature
+        def log_message(self, format, *args):
             pass
 
         def do_GET(self):

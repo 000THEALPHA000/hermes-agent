@@ -252,7 +252,7 @@ def test_child_for_another_profile_keeps_the_remote_deployment(plane, monkeypatc
             "from hermes_cli.config import load_config\n"
             "print('RESULT=' + json.dumps([get_config_backend().name, load_config()['display']['personality']]))\n")
     proc = subprocess.run([sys.executable, "-c", code], env=child_env, capture_output=True, text=True,
-                          timeout=120, stdin=subprocess.DEVNULL, cwd=str(tmp_path))
+                          timeout=120, stdin=subprocess.DEVNULL, cwd=str(tmp_path), check=False)
     assert proc.returncode == 0, proc.stderr[-3000:]
     line = [ln for ln in (proc.stdout + proc.stderr).splitlines() if ln.startswith("RESULT=")][-1]
     assert json.loads(line[len("RESULT="):]) == ["remote", "remote-child"]
@@ -387,7 +387,7 @@ def _fresh_interpreter_boot(tmp_path, env, project_env):
     child = {k: v for k, v in os.environ.items() if k in ("PATH", "LANG", "TMPDIR", "SYSTEMROOT")}
     child.update(env, PYTHONPATH=str(Path(__file__).resolve().parents[3]))
     return subprocess.run([sys.executable, "-c", code], env=child, capture_output=True, text=True,
-                          timeout=120, stdin=subprocess.DEVNULL, cwd=str(tmp_path))
+                          timeout=120, stdin=subprocess.DEVNULL, cwd=str(tmp_path), check=False)
 
 
 def test_plane_credential_from_the_project_dotenv_boots(plane, tmp_path):

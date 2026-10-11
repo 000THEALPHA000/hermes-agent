@@ -320,7 +320,7 @@ def test_cas_retry_keeps_a_sibling_added_to_a_section_the_doc_lacked(plane, monk
         write_config_key(plane.home / "config.yaml", "terminal.timeout", 321)
 
     assert plane.profile("default")["values"]["terminal"] == {"persistent": True, "timeout": 321}
-    first, retry = plane.patches()
+    _first, retry = plane.patches()
     assert retry["body"]["expectedVersion"] == 2
     assert retry["body"]["set"] == {"terminal.timeout": 321} and "unset" not in retry["body"]
 

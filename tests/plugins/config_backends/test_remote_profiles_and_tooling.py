@@ -87,7 +87,7 @@ def test_roster_model_follows_the_remote_layer_not_the_local_file(profile_plane)
 
 
 def _tui_server(monkeypatch, home):
-    import hermes_cli.banner as banner
+    from hermes_cli import banner
     monkeypatch.setattr(banner, "prefetch_update_check", lambda: None)
     from tui_gateway import server
     monkeypatch.setattr(server, "_hermes_home", home)

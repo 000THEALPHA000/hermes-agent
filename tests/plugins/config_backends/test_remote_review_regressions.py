@@ -64,7 +64,7 @@ def test_cloud_boot_in_a_fresh_interpreter_does_not_hang(plane, tmp_path):
             "print('RESULT=' + load_config()['display']['personality'])\n")
 
     proc = subprocess.run([sys.executable, "-c", code], env=child, capture_output=True, text=True,
-                          timeout=90, stdin=subprocess.DEVNULL, cwd=str(tmp_path))
+                          timeout=90, stdin=subprocess.DEVNULL, cwd=str(tmp_path), check=False)
 
     assert proc.returncode == 0, proc.stderr[-3000:]
     assert "RESULT=remote" in proc.stdout + proc.stderr  # tui_gateway.server routes print() to stderr

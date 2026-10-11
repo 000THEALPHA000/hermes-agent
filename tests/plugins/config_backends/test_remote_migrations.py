@@ -184,7 +184,7 @@ def test_migration_of_a_replaced_doc_does_not_touch_the_replacement(plane, monke
     def read():
         try:
             read_raw_config()
-        except BaseException as exc:  # noqa: BLE001 — surfaced below
+        except BaseException as exc:
             failures.append(exc)
 
     reader = threading.Thread(target=read)
@@ -230,7 +230,7 @@ def test_edit_during_an_in_memory_migration_never_sends_the_migration(plane, mon
     def migrate():  # a lock-free reader (read_config_doc) starts the migration
         try:
             read_config_doc(plane.home / "config.yaml")
-        except BaseException as exc:  # noqa: BLE001 — surfaced below
+        except BaseException as exc:
             failures.append(exc)
 
     migrator = threading.Thread(target=migrate, name="migrator")

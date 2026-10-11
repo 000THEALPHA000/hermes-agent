@@ -569,7 +569,7 @@ def _import_db_member(
             pass
 
 
-def _get_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...]) -> Any:
+def _get_config_path_value(data: dict[str, Any], dotted: tuple[str, ...]) -> Any:
     node: Any = data
     for key in dotted:
         if not isinstance(node, dict):
@@ -578,7 +578,7 @@ def _get_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...]) -> Any
     return node
 
 
-def _set_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...], value: Any) -> None:
+def _set_config_path_value(data: dict[str, Any], dotted: tuple[str, ...], value: Any) -> None:
     node = data
     for key in dotted[:-1]:
         child = node.get(key)
