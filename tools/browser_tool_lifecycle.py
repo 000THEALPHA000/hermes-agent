@@ -14,6 +14,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from hermes_cli.process_identity import register_child, update_supervised_pgids
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from tools.browser_tool_origin import origin as _bt
 from tools import browser_tool_cdp as _cdp
@@ -639,6 +640,53 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     _drop_last_active_binding(task_id)
 
 
+# session name -> process groups of its agent-browser daemon and Chromium handed to the
+# owner-death supervisor. The daemon detaches into its own session and Chromium calls setpgid
+# into a group of its own, so neither dies with Hermes: a SIGKILLed / OOM-killed Hermes left both
+# running until a later Hermes's orphan sweep (#62615). Registering both groups makes them die
+# with this process at the moment it dies, by any cause.
+_owned_session_groups: dict[str, set[int]] = {}
+_owned_session_groups_lock = threading.Lock()
+
+
+def _own_local_daemon(session_name: str) -> None:
+    """Hand this session's verified daemon and Chromium groups to the owner-death supervisor.
+
+    Called after every local command, because the daemon starts lazily on the first one and can
+    relaunch Chromium later; already-registered groups cost one set lookup. Never raises."""
+    if os.name != "posix" or not session_name:
+        return
+    import psutil
+
+    socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_name}")
+    try:
+        daemon_pid = int(Path(socket_dir, f"{session_name}.pid").read_text(encoding="utf-8-sig").strip())
+        if os.getpgid(daemon_pid) != daemon_pid:  # windows-footgun: ok — posix-only, returned above
+            return
+        if not _verify_reapable_browser_daemon(daemon_pid, socket_dir, session_name):
+            return
+        groups = {daemon_pid} | {os.getpgid(c.pid) for c in psutil.Process(daemon_pid).children()}  # windows-footgun: ok — posix-only
+    except (OSError, ValueError, psutil.Error) as exc:
+        _bt.logger.debug("No agent-browser daemon to supervise for %s: %s", session_name, exc)
+        return
+    groups.discard(os.getpgid(0))  # windows-footgun: ok — posix-only; never our own group
+    with _owned_session_groups_lock:
+        owned = _owned_session_groups.setdefault(session_name, set())
+        new = groups - owned
+        owned |= new
+    if new:
+        update_supervised_pgids("register", sorted(new))
+        register_child(daemon_pid, "agent-browser-daemon")
+
+
+def _release_owned_daemon(session_name: str) -> None:
+    """Forget the groups registered for ``session_name`` once its daemon was torn down."""
+    with _owned_session_groups_lock:
+        groups = _owned_session_groups.pop(session_name, None)
+    if groups:
+        update_supervised_pgids("unregister", sorted(groups))
+
+
 def _kill_verified_daemon(socket_dir: str, session_name: str) -> bool:
     """Tree-kill the daemon in ``<socket_dir>/<session>.pid`` if verifiably ours; True when
     a kill was issued. Never raises."""
@@ -685,6 +733,7 @@ def _release_session_resources(task_id: str, session_info: dict[str, Any]) -> No
         if os.path.exists(socket_dir):
             _kill_verified_daemon(socket_dir, session_name)
             shutil.rmtree(socket_dir, ignore_errors=True)
+        _release_owned_daemon(session_name)
 
 
 def _force_reap_browser_session(task_id: str) -> None:
