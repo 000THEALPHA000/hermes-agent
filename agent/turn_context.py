@@ -1335,15 +1335,18 @@ def build_api_messages(
         if msg is current_turn_message and msg.get("role") == "user":
             if isinstance(_api_content, str) and _api_content:
                 # Reuse the prologue's stamp so sidecar and wire cannot drift
-                # and every pass this turn sends identical bytes. MoA turns never
-                # get that stamp, so a staged sidecar holds only the note: compose
-                # the injections onto it here, exactly as the live branch below.
+                # and every pass this turn sends identical bytes. MoA and codex
+                # turns never get that stamp (prologue predicate at the
+                # ``Sidecar skipped for codex_app_server/MoA`` branch), so a
+                # staged sidecar holds only the note: compose the injections
+                # onto it here, exactly as the live branch below.
                 # Nothing injected -> the staged bytes go out untouched.
                 _stamped = (
                     compose_user_api_content(
                         _api_content, ext_prefetch_cache, plugin_user_context
                     )
                     if moa_config
+                    or getattr(agent, "api_mode", None) == "codex_app_server"
                     else None
                 )
                 api_msg["content"] = _stamped if _stamped is not None else _api_content

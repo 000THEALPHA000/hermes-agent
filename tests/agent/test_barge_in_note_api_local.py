@@ -154,6 +154,37 @@ def test_moa_turn_keeps_injected_context_on_a_staged_sidecar():
     assert quiet[0]["content"] == f"{NOTE}\n\n{CLEAN}"
 
 
+def test_codex_turn_keeps_injected_context_on_a_staged_sidecar():
+    """codex_app_server turns are never stamped by the prologue either (same skip
+    predicate as MoA): with a staged sidecar the wire copy must compose the injections,
+    or memory/plugin context is dropped on codex turns that stage a note."""
+    live, _, _ = _stage_barge_in_turn()
+
+    class _CodexSendAgent(_SendAgent):
+        api_mode = "codex_app_server"
+
+    request, _ = build_api_messages(
+        _CodexSendAgent(), [live], current_turn_user_idx=0,
+        ext_prefetch_cache="MEMORY: the user lives in Lisbon",
+        plugin_user_context="PLUGIN: current task is voice cloning",
+        moa_config=None, active_system_prompt="",
+    )
+
+    wire = request[0]["content"]
+    assert NOTE in wire
+    assert "MEMORY: the user lives in Lisbon" in wire
+    assert "PLUGIN: current task is voice cloning" in wire
+    assert live["content"] == CLEAN
+    assert live["api_content"] == f"{NOTE}\n\n{CLEAN}"
+
+    # Byte-stability: nothing injected -> the staged bytes go out untouched.
+    quiet, _ = build_api_messages(
+        _CodexSendAgent(), [live], current_turn_user_idx=0, ext_prefetch_cache="",
+        plugin_user_context="", moa_config=None, active_system_prompt="",
+    )
+    assert quiet[0]["content"] == f"{NOTE}\n\n{CLEAN}"
+
+
 def test_noted_turn_reanchors_on_the_staged_dict_despite_a_later_user_row():
     """Post-staging ``content`` is the CLEAN text while this turn's text is the noted one:
     the sidecar must exact-match, or the reanchor falls through to the last user-originated
