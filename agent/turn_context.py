@@ -282,8 +282,9 @@ def start_deferred_title_upgrade(agent: Any) -> None:
 def reanchor_current_turn_user_idx(messages: list[Any], user_message: Any) -> int:
     """Locate this turn's user message after compaction rebuilt ``messages``.
 
-    Prefers the LAST user message whose content exactly matches this turn's text, else
-    the last user-originated turn; compaction handoffs are never the fallback.
+    Prefers the LAST user message whose content (or its ``api_content`` sidecar) exactly
+    matches this turn's text, else the last user-originated turn; compaction handoffs are
+    never the fallback.
     Returns -1 when there is no user-originated message.
 
     Compression replaces list entries with fresh copies (and may append a todo-snapshot user message or a
@@ -305,6 +306,12 @@ def reanchor_current_turn_user_idx(messages: list[Any], user_message: Any) -> in
         # Typed synthetic current events keep their persistence anchor when raw
         # content is unchanged; not eligible for the human-only fallback below.
         if msg.get("content") == user_message:
+            return i
+        # A staged API-only turn (barge-in note, voice prefix) keeps the CLEAN text in
+        # ``content`` while this turn's text is the noted one: the sidecar is the exact
+        # match there, and without it noted turns always miss into the fallback.
+        _sidecar = msg.get("api_content")
+        if isinstance(_sidecar, str) and _sidecar == user_message:
             return i
         live_view = user_originated_turn_view(msg)
         if live_view is None:
@@ -691,7 +698,12 @@ def _stage_turn_user_message(
 ) -> tuple[dict[str, Any], Any]:
     """Build this turn's user dict, reusing CLI-staged input only when its clean text
     matches this turn (a stale handoff must not replace later input; voice turns
-    compare the clean override). Returns ``(user_msg, pending_cli_message)``."""
+    compare the clean override). Returns ``(user_msg, pending_cli_message)``.
+
+    Invariant for every setter of ``_pending_cli_user_message``: its ``content`` equals
+    the persist text this turn writes (``expected_persist_content``, note-free), so the
+    staged row can be adopted instead of rebuilt. A miss is dropped below and logged, so
+    a setter that stages noted bytes fails loudly rather than flushing a second row."""
     pending_cli_message = getattr(agent, "_pending_cli_user_message", None)
     expected_persist_content = (
         persist_user_message if persist_user_message is not None else user_message
@@ -705,6 +717,12 @@ def _stage_turn_user_message(
     else:
         user_msg = {"role": "user", "content": user_message}
         if isinstance(pending_cli_message, dict):
+            logger.debug(
+                "staged CLI user message missed the persist-text invariant "
+                "(staged=%r expected=%r) — dropped; a setter staged non-persist text",
+                str(pending_cli_message.get("content"))[:160],
+                str(expected_persist_content)[:160],
+            )
             agent._pending_cli_user_message = None
         _stage_user_api_content(user_msg, user_message, expected_persist_content)
     # CLI input is stamped when staged; gateway input may carry the platform event
@@ -1317,8 +1335,18 @@ def build_api_messages(
         if msg is current_turn_message and msg.get("role") == "user":
             if isinstance(_api_content, str) and _api_content:
                 # Reuse the prologue's stamp so sidecar and wire cannot drift
-                # and every pass this turn sends identical bytes.
-                api_msg["content"] = _api_content
+                # and every pass this turn sends identical bytes. MoA turns never
+                # get that stamp, so a staged sidecar holds only the note: compose
+                # the injections onto it here, exactly as the live branch below.
+                # Nothing injected -> the staged bytes go out untouched.
+                _stamped = (
+                    compose_user_api_content(
+                        _api_content, ext_prefetch_cache, plugin_user_context
+                    )
+                    if moa_config
+                    else None
+                )
+                api_msg["content"] = _stamped if _stamped is not None else _api_content
             else:
                 # Callers that bypass the prologue stamping: compose live.
                 _composed = compose_user_api_content(
