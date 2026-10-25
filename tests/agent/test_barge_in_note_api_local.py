@@ -28,10 +28,13 @@ def _view():
     return object.__new__(SessionDB)
 
 
-def _row(rid, content, timestamp, active):
+def _row(rid, content, timestamp, active, message_uid=None):
+    # message_uid/_compressed_summary are read unconditionally by the display dedupe's
+    # summary-carrier fold (hermes_state_messages._fold_summary_carrier, 5a282c6c3b).
     return {"id": rid, "role": "user", "content": content, "timestamp": timestamp,
             "tool_call_id": None, "tool_calls": None, "tool_name": None, "active": active,
-            "display_kind": None, "display_metadata": None}
+            "display_kind": None, "display_metadata": None, "message_uid": message_uid,
+            "_compressed_summary": None}
 
 
 def _agent(override):
@@ -62,8 +65,8 @@ def test_barge_in_note_never_persists_into_a_second_user_turn():
     # Fold the durable row against the compaction copy re-materialised from the live turn dict,
     # exactly as the display projection does: one user message -> ONE logical turn.
     merged = _view()._dedupe_display_generations([
-        _row(1, durable_content, TIMESTAMP, active=0),
-        _row(2, live["content"], TIMESTAMP, active=1),
+        _row(1, durable_content, TIMESTAMP, active=0, message_uid="u-bar-in"),
+        _row(2, live["content"], TIMESTAMP, active=1, message_uid="u-bar-in"),
     ])
     assert len(merged) == 1, "one user message must collapse to ONE display turn"
 
@@ -158,7 +161,7 @@ def test_genuine_repeat_of_identical_text_still_speaks_twice():
     """Control: the same text sent as two GENUINE turns (distinct timestamps) must remain two
     user turns -- a fix that swallows real repeats is a regression."""
     merged = _view()._dedupe_display_generations([
-        _row(1, "ok", 100.0, active=0),
-        _row(2, "ok", 200.0, active=1),
+        _row(1, "ok", 100.0, active=0, message_uid="u-genuine-1"),
+        _row(2, "ok", 200.0, active=1, message_uid="u-genuine-2"),
     ])
     assert len(merged) == 2
