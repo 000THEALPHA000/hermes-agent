@@ -14,7 +14,12 @@ from unittest.mock import MagicMock, patch
 import agent.conversation_loop  # pre-import: avoids a lazily-activated bootstrap mid-test
 from agent.context_compressor import _INFLIGHT_TASK_REPLAY_HEADER, ContextCompressor
 from agent.session_persistence import durable_user_row_content
-from agent.turn_context import _stage_turn_user_message, _stamp_api_content_sidecar, build_api_messages
+from agent.turn_context import (
+    _stage_turn_user_message,
+    _stamp_api_content_sidecar,
+    build_api_messages,
+    reanchor_current_turn_user_idx,
+)
 from hermes_state import SessionDB
 from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE
 
@@ -117,6 +122,54 @@ def test_injected_context_composes_onto_the_noted_sidecar():
     assert live["content"] == CLEAN
     assert live["api_content"].startswith(f"{NOTE}\n\n{CLEAN}\n\n")
     assert "MEMORY: the user lives in Lisbon" in live["api_content"]
+
+
+def test_moa_turn_keeps_injected_context_on_a_staged_sidecar():
+    """MoA turns are never stamped by the prologue, so a staged sidecar is note-only: the
+    wire copy must compose the injections onto it, or memory/plugin context is silently
+    dropped on exactly the turns that stage a note."""
+    live, _, _ = _stage_barge_in_turn()
+
+    request, _ = build_api_messages(
+        _SendAgent(), [live], current_turn_user_idx=0,
+        ext_prefetch_cache="MEMORY: the user lives in Lisbon",
+        plugin_user_context="PLUGIN: current task is voice cloning",
+        moa_config={"models": ["a", "b"]}, active_system_prompt="",
+    )
+
+    wire = request[0]["content"]
+    assert NOTE in wire
+    assert "MEMORY: the user lives in Lisbon" in wire
+    assert "PLUGIN: current task is voice cloning" in wire
+    assert "api_content" not in request[0]
+    # The durable transcript keeps the clean prompt, and the staged bytes are untouched.
+    assert live["content"] == CLEAN
+    assert live["api_content"] == f"{NOTE}\n\n{CLEAN}"
+
+    # Byte-stability: a second pass with nothing injected replays the staged bytes as-is.
+    quiet, _ = build_api_messages(
+        _SendAgent(), [live], current_turn_user_idx=0, ext_prefetch_cache="",
+        plugin_user_context="", moa_config={"models": ["a", "b"]}, active_system_prompt="",
+    )
+    assert quiet[0]["content"] == f"{NOTE}\n\n{CLEAN}"
+
+
+def test_noted_turn_reanchors_on_the_staged_dict_despite_a_later_user_row():
+    """Post-staging ``content`` is the CLEAN text while this turn's text is the noted one:
+    the sidecar must exact-match, or the reanchor falls through to the last user-originated
+    row and anchors the injection stamp on the wrong dict after compression."""
+    live, _, _ = _stage_barge_in_turn()
+    noted = f"{NOTE}\n\n{CLEAN}"
+    assert live["content"] == CLEAN and live["api_content"] == noted
+    messages = [
+        live,
+        {"role": "assistant", "content": "Sunny, around 24C."},
+        {"role": "user", "content": "an older restored prompt"},
+    ]
+
+    assert reanchor_current_turn_user_idx(messages, noted) == 0
+    # Control: the clean persist text still anchors the same dict.
+    assert reanchor_current_turn_user_idx(messages, CLEAN) == 0
 
 
 def test_compaction_replay_restates_the_task_without_the_note():
